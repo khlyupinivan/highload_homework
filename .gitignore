@@ -1,0 +1,6 @@
+secrets/
+**/go.sum.bak
+api
+dashboard-gen-bin
+*.log
+.env.local

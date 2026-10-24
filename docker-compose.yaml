@@ -1,0 +1,108 @@
+services:
+  api:
+    build: ./app
+    environment:
+      POD_NAME: ${POD_NAME:-pod-1}
+      DC: ${DC:-dc-msk}
+      DEPLOYMENT: ${DEPLOYMENT:-crud-api}
+      NS: ${NS:-hw1}
+      CLUSTER: ${CLUSTER:-dev}
+    ports:
+      ["8080:8080"]
+    healthcheck:
+      test: ["CMD", "/api", "-healthcheck"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.154.0
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+      - "-http.pathPrefix=/"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - vm-data:/victoria-metrics-data
+    ports:
+      - "8428:8428"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8428/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:12.4.13
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      victoriametrics:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  grafana-bootstrap:
+    build: ./grafana/bootstrap
+    environment:
+      GF_URL: http://grafana:3000
+      GF_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      SA_NAME: dashboard-gen
+      TOKEN_FILE: /secrets/grafana-token
+    volumes:
+      - ./secrets:/secrets
+    depends_on:
+      grafana:
+        condition: service_healthy
+    restart: "no"
+
+  dashboard-gen:
+    build: ./dashboard-gen
+    environment:
+      APP_URL: http://api:8080
+      GF_URL: http://grafana:3000
+      DS_UID: vm
+      GF_TOKEN_FILE: /secrets/grafana-token
+    volumes:
+      - ./secrets:/secrets:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      grafana-bootstrap:
+        condition: service_completed_successfully
+    restart: "no"
+
+  loadtest:
+    build: ./loadtest
+    environment:
+      BASE_URL: http://api:8080
+      DURATION: "1800"
+      WORKERS: "6"
+      RPS_PER_WORKER: "0"
+      ERROR_RATE: "0.10"
+      BOOM_RATE: "0.03"
+    depends_on:
+      dashboard-gen:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vm-data:
+  grafana-data:
